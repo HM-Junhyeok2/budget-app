@@ -2,10 +2,21 @@
 """
 가계부 대시보드 (Streamlit)
 - CSV/XLSX 업로드, 인코딩 자동 탐색, 안전 파싱
-- 요약 카드 + Plotly 파이 차트
+- 요약 카드 + Plotly 파이 차트 + 달력
 - 사이드바 필터링
-- 수입/지출 추가 폼
+- 수입/지출 추가/삭제
 - CSV(utf-8-sig) / XLSX 다운로드
+- 로그인 + Google Sheets 공유 저장 (secrets 설정 시 자동)
+
+[직접 수정하고 싶을 때 — 코드에서 "[설정]" 이라고 적힌 주석을 찾으세요]
+  · 열(항목) 구성          → COLUMNS
+  · 지출/수입 분류 기준     → EXPENSE_LABELS / INCOME_LABELS
+  · 차트 폰트              → PLOTLY_FONT
+  · 로컬 저장 파일명        → STORE_PATH
+  · 로그인 아이디/비번      → (코드 아님) .streamlit/secrets.toml 의 [auth]
+  · 기본 조회 기간/기본 월  → "조회 기간" 블록의 [설정] 주석
+  · 요약 카드 문구          → "요약 카드" 블록
+  · 파이 차트 높이/범례     → style_pie()
 """
 
 import io
@@ -126,10 +137,14 @@ if st.session_state.get("_shutdown"):
 
 # ---------------------------------------------------------------------------
 # 로그인 게이트
-# secrets 에 [auth] 가 있으면 비밀번호를 요구하고, 없으면(로컬 테스트) 통과한다.
-#   [auth]
-#   죠니 = "비밀번호1"
-#   묭스니 = "비밀번호2"
+# [설정] 로그인 아이디/비밀번호는 코드가 아니라 secrets 에 둡니다. (여기 코드는 안 바꿔도 됨)
+#   - 로컬:   .streamlit/secrets.toml 파일의 [auth] 섹션
+#   - 배포:   Streamlit Cloud 앱 Settings → Secrets 의 [auth] 섹션
+#   - 형식 (한글 아이디는 반드시 큰따옴표로 감쌀 것):
+#       [auth]
+#       "죠니" = "비밀번호1"
+#       "묭스니" = "비밀번호2"
+#   - [auth] 가 아예 없으면 로그인 없이 바로 들어갑니다(로컬 테스트용).
 # ---------------------------------------------------------------------------
 def _require_login():
     try:
@@ -160,13 +175,22 @@ def _require_login():
 
 _require_login()
 
-# 표준 컬럼 정의
+# ===========================================================================
+# [설정] 자주 바꿀 수 있는 값들 — 여기만 고쳐도 앱 전체에 반영됩니다.
+# ===========================================================================
+
+# [설정] 가계부의 열(항목) 구성과 순서.
+#   - 여기 순서대로 표/엑셀/시트에 저장됩니다.
+#   - 열 이름을 바꾸면 CSV·구글시트 헤더도 이 이름과 맞춰야 합니다.
+#   - 열을 추가/삭제하면 입력 폼(아래 "내역 추가")도 함께 손봐야 합니다.
 COLUMNS = ["날짜", "입금/출금", "입력자", "주체", "카테고리", "지불 방식", "메모", "금액"]
 
-# Plotly 한글 폰트 설정 (시스템에 있는 폰트 중 하나 사용)
+# [설정] 차트에 쓰는 한글 폰트 (앞에서부터 설치된 폰트를 사용).
+#   - 글자가 깨지면 사용 중인 OS 폰트 이름을 앞에 추가하세요.
 PLOTLY_FONT = "Malgun Gothic, AppleGothic, NanumGothic, sans-serif"
 
-# "지출"로 간주하는 라벨 (유연하게 매칭)
+# [설정] "입금/출금" 칸의 값을 지출/수입으로 분류하는 기준.
+#   - 데이터에서 다른 표현을 쓰면(예: "카드값") 아래 집합에 추가하세요. (소문자로)
 EXPENSE_LABELS = {"출금", "지출", "expense", "withdraw", "withdrawal"}
 INCOME_LABELS = {"입금", "수입", "income", "deposit"}
 
@@ -521,6 +545,9 @@ def to_xlsx_bytes(df: pd.DataFrame) -> bytes:
 
 
 def style_pie(fig):
+    # [설정] 파이 차트 외관.
+    #   - 조각 안 글자(texttemplate): 라벨/퍼센트/금액 표시 형식.
+    #   - height: 차트 높이(px). 범례가 겹치면 이 값을 키우세요.
     fig.update_traces(
         textposition="inside",
         texttemplate="%{label}<br>%{percent}<br>%{value:,.0f}원",
@@ -529,7 +556,7 @@ def style_pie(fig):
     )
     fig.update_layout(
         font=dict(family=PLOTLY_FONT),
-        height=430,
+        height=430,  # ← 차트 높이. 범례가 파이와 겹치면 이 숫자를 키우기
         # 범례를 그래프 하단 바깥에 가로로 배치하고, 아래 여백을 넉넉히 확보해 겹침 방지
         legend=dict(
             orientation="h",
@@ -549,9 +576,14 @@ def style_pie(fig):
 # ---------------------------------------------------------------------------
 import os
 
+# [설정] 로컬(내 PC) 저장 파일 이름.
+#   - 구글시트를 안 쓸 때 이 CSV 파일에 데이터가 저장됩니다. (앱 폴더 안)
+#   - 파일명을 바꾸고 싶으면 아래 "가계부_데이터.csv" 만 바꾸세요.
 STORE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "가계부_데이터.csv")
 
 # Google Sheets 백엔드 (secrets 설정 시 자동 활성화, 없으면 로컬 CSV 사용)
+#   - secrets.toml 에 구글 키가 있으면 자동으로 구글시트 모드(공유)로 바뀝니다.
+#   - 설정이 없으면 위 STORE_PATH 의 로컬 CSV 를 씁니다. (수정할 필요 없음)
 try:
     import sheets_backend
     USE_SHEETS = sheets_backend.is_enabled()
@@ -737,25 +769,46 @@ if not data.empty:
     years = sorted(valid_dates.dt.year.unique().tolist()) if not valid_dates.empty else []
 
     # --- 조회 기간: 메인 상단에 가로 배치 ---
+    # [설정] 앱을 처음 열 때의 기본 조회 기간.
+    #   - 지금은 "연·월별"로 시작해서 "이번 달"을 보여줍니다.
+    #   - 처음부터 전체를 보고 싶으면 아래 index=... 의 "연·월별"을 "전체" 로 바꾸세요.
+    #     예) index=period_options.index("전체")
     st.subheader("🗓️ 조회 기간")
+    period_options = ["전체", "연도별", "연·월별", "날짜 범위"]
     pc0, pc1, pc2 = st.columns([1.4, 1, 1])
     with pc0:
         period_mode = st.radio(
-            "기간 방식", ["전체", "연도별", "연·월별", "날짜 범위"], horizontal=True
+            "기간 방식", period_options, index=period_options.index("연·월별"), horizontal=True
         )
 
+    _today = date.today()  # 오늘 날짜 (기본 연/월을 "이번 달"로 맞추는 데 사용)
+
     if period_mode == "연도별" and years:
+        default_y = _today.year if _today.year in years else years[-1]
         with pc1:
-            year_sel = st.selectbox("연도", years, index=len(years) - 1)
+            year_sel = st.selectbox("연도", years, index=years.index(default_y))
 
     elif period_mode == "연·월별" and years:
+        default_y = _today.year if _today.year in years else years[-1]
         with pc1:
-            year_sel = st.selectbox("연도", years, index=len(years) - 1)
+            year_sel = st.selectbox("연도", years, index=years.index(default_y))
         months_in_year = sorted(
             valid_dates[valid_dates.dt.year == year_sel].dt.month.unique().tolist()
         )
-        with pc2:
-            month_sel = st.selectbox("월", months_in_year) if months_in_year else "전체"
+        # [설정] 기본으로 선택되는 "월".
+        #   - 이번 달에 데이터가 있으면 이번 달을, 없으면 가장 최근 달을 보여줍니다.
+        #   - 항상 가장 최근 달을 기본으로 하고 싶으면 아래 default_m_idx 를
+        #     그냥 len(months_in_year) - 1 로 고정하세요.
+        if months_in_year:
+            default_m_idx = (
+                months_in_year.index(_today.month)
+                if _today.month in months_in_year
+                else len(months_in_year) - 1
+            )
+            with pc2:
+                month_sel = st.selectbox("월", months_in_year, index=default_m_idx)
+        else:
+            month_sel = "전체"
 
     elif period_mode == "날짜 범위" and not valid_dates.empty:
         min_d = valid_dates.min().date()
@@ -875,6 +928,21 @@ expense_total = float(filtered.loc[flow_class == "지출", "금액"].sum()) if n
 net_total = income_total - expense_total
 
 st.subheader("📊 요약")
+
+# 요약 카드 위에 "지금 어떤 기간을 보고 있는지" 라벨을 표시한다.
+#   - 조회 기간/필터를 바꾸면 이 라벨과 아래 금액이 함께 바뀐다.
+#   - 금액 계산은 필터 적용된 데이터(filtered) 기준이므로 여기 로직은 건드릴 필요 없다.
+_period_label = "전체 기간"
+if not data.empty:
+    if period_mode == "연도별" and year_sel != "전체":
+        _period_label = f"{year_sel}년"
+    elif period_mode == "연·월별" and year_sel != "전체" and month_sel != "전체":
+        _period_label = f"{year_sel}년 {month_sel}월"
+    elif period_mode == "날짜 범위" and date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        _period_label = f"{date_range[0]} ~ {date_range[1]}"
+st.markdown(f"**🗓️ {_period_label}**")  # 예: "🗓️ 2026년 10월"
+
+# 요약 카드 3개 (문구를 바꾸고 싶으면 아래 "총 수입" 등 글자만 수정)
 c1, c2, c3 = st.columns(3)
 c1.metric("총 수입", f"{income_total:,.0f} 원")
 c2.metric("총 지출", f"{expense_total:,.0f} 원")
