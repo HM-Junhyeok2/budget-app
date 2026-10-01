@@ -23,12 +23,40 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="가계부 대시보드", page_icon="💰", layout="wide")
 
-# 우측 상단 Deploy 버튼만 숨김 (⋮ 메뉴는 유지)
+# Deploy 버튼 숨김 + 모바일 최적화 스타일
 st.markdown(
     """
     <style>
+    /* 우측 상단 Deploy 버튼만 숨김 (⋮ 메뉴는 유지) */
     [data-testid="stAppDeployButton"] { display: none !important; }
     .stDeployButton { display: none !important; }
+
+    /* 본문 좌우/상단 여백 축소 (좁은 화면에서 공간 확보) */
+    .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+
+    /* 요약 metric 글자 크기 — 모바일에서 넘치지 않게 */
+    [data-testid="stMetricValue"] { font-size: 1.1rem; }
+    [data-testid="stMetricLabel"] { font-size: 0.8rem; }
+
+    /* 모바일 (가로폭 640px 이하) 전용 */
+    @media (max-width: 640px) {
+        .block-container { padding-left: 0.6rem; padding-right: 0.6rem; }
+
+        /* 요약 metric 더 작게 */
+        [data-testid="stMetricValue"] { font-size: 0.95rem; }
+        [data-testid="stMetricLabel"] { font-size: 0.72rem; }
+
+        /* 버튼/입력 터치 영역 확보, 글자 약간 축소 */
+        .stButton button { padding: 0.35rem 0.3rem; font-size: 0.85rem; }
+
+        /* 탭 라벨이 좁은 화면에서 줄바꿈되도록 */
+        .stTabs [data-baseweb="tab"] { padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+
+        /* 제목 크기 축소 */
+        h1 { font-size: 1.5rem; }
+        h2 { font-size: 1.2rem; }
+        h3 { font-size: 1.05rem; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -302,6 +330,152 @@ def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].astype("string").str.strip()
 
     return df[COLUMNS]
+
+
+def render_calendar(df: pd.DataFrame):
+    """월별 달력에 일별 금액 표시 + 날짜 선택 시 그날 내역."""
+    import calendar as _cal
+
+    dated = df[df["날짜"].notna()].copy()
+    if dated.empty:
+        st.info("날짜가 있는 데이터가 없습니다. 내역을 추가하거나 파일을 업로드하세요.")
+        return
+
+    dated["_flow"] = classify_flow(dated["입금/출금"])
+
+    # 연/월 선택 (데이터에 있는 범위 기준)
+    years = sorted(dated["날짜"].dt.year.unique().tolist())
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        y = st.selectbox("연도", years, index=len(years) - 1, key="cal_year")
+    months = sorted(dated[dated["날짜"].dt.year == y]["날짜"].dt.month.unique().tolist())
+    with cc2:
+        m = st.selectbox("월", months, index=len(months) - 1, key="cal_month") if months else None
+    if m is None:
+        st.info("선택한 연도에 데이터가 없습니다.")
+        return
+
+    month_df = dated[(dated["날짜"].dt.year == y) & (dated["날짜"].dt.month == m)]
+
+    # 일별 수입/지출 집계
+    daily = {}
+    for day, g in month_df.groupby(month_df["날짜"].dt.day):
+        inc = float(g.loc[g["_flow"] == "입금", "금액"].sum())
+        exp = float(g.loc[g["_flow"] == "지출", "금액"].sum())
+        daily[int(day)] = (inc, exp)
+
+    st.markdown(f"#### {y}년 {m}월")
+
+    # 요일 헤더
+    week_days = ["월", "화", "수", "목", "금", "토", "일"]
+    head = st.columns(7)
+    for i, wd in enumerate(week_days):
+        head[i].markdown(f"**{wd}**")
+
+    # 달력 그리드 (월요일 시작)
+    _cal.setfirstweekday(_cal.MONDAY)
+    weeks = _cal.monthcalendar(y, m)
+    for week in weeks:
+        cols = st.columns(7)
+        for i, day in enumerate(week):
+            with cols[i]:
+                if day == 0:
+                    st.write("")
+                    continue
+                inc, exp = daily.get(day, (0.0, 0.0))
+                # 날짜 버튼
+                if st.button(f"{day}", key=f"cal_day_{y}_{m}_{day}", width="stretch"):
+                    st.session_state["cal_selected"] = (y, m, day)
+                # 금액 표시 (지출 빨강, 수입 초록) — 좁은 칸에서 넘치지 않게 축약
+                def _fmt(v):
+                    if v >= 10000:
+                        return f"{v/10000:.0f}만" if v % 10000 == 0 else f"{v/10000:.1f}만"
+                    return f"{v:,.0f}"
+                if exp:
+                    st.markdown(
+                        f"<div style='text-align:center;color:#d33;font-size:10px;line-height:1.1;"
+                        f"white-space:nowrap;overflow:hidden'>-{_fmt(exp)}</div>",
+                        unsafe_allow_html=True,
+                    )
+                if inc:
+                    st.markdown(
+                        f"<div style='text-align:center;color:#2a7;font-size:10px;line-height:1.1;"
+                        f"white-space:nowrap;overflow:hidden'>+{_fmt(inc)}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+    # 선택한 날짜 상세
+    sel = st.session_state.get("cal_selected")
+    if sel and sel[0] == y and sel[1] == m:
+        _, _, d = sel
+        st.divider()
+        st.markdown(f"### 📌 {y}년 {m}월 {d}일 내역")
+        day_df = month_df[month_df["날짜"].dt.day == d]
+        if day_df.empty:
+            st.info("이 날짜에는 내역이 없습니다.")
+        else:
+            inc = float(day_df.loc[day_df["_flow"] == "입금", "금액"].sum())
+            exp = float(day_df.loc[day_df["_flow"] == "지출", "금액"].sum())
+            s1, s2, s3 = st.columns(3)
+            s1.metric("수입", f"{inc:,.0f} 원")
+            s2.metric("지출", f"{exp:,.0f} 원")
+            s3.metric("합계", f"{inc - exp:,.0f} 원")
+
+            exp_rows = day_df[day_df["_flow"] == "지출"].drop(columns=["_flow"])
+            inc_rows = day_df[day_df["_flow"] == "입금"].drop(columns=["_flow"])
+
+            def _show(rows):
+                if rows.empty:
+                    st.caption("내역 없음")
+                    return
+                st.dataframe(
+                    rows,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "날짜": st.column_config.DateColumn("날짜", format="YYYY-MM-DD"),
+                        "금액": st.column_config.NumberColumn("금액", format="%d"),
+                    },
+                )
+
+            st.markdown("**💸 지출**")
+            _show(exp_rows)
+            st.markdown("**💰 수입**")
+            _show(inc_rows)
+
+
+def render_sidebar_footer():
+    """사이드바 하단: 데이터 관리 + 앱 종료 (어느 보기 모드든 항상 그려짐)."""
+    with st.sidebar:
+        st.divider()
+        st.header("🧹 데이터 관리")
+        n_total = len(st.session_state.data)
+        n_nodate = int(st.session_state.data["날짜"].isna().sum()) if n_total else 0
+        st.caption(f"전체 {n_total:,}건 · 날짜 없음 {n_nodate:,}건")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("날짜없는행 삭제", disabled=n_nodate == 0, width="stretch"):
+                st.session_state.data = (
+                    st.session_state.data[st.session_state.data["날짜"].notna()]
+                    .reset_index(drop=True)
+                )
+                save_store(st.session_state.data)
+                st.success(f"날짜 없는 {n_nodate:,}건을 삭제했습니다.")
+                st.rerun()
+        with c2:
+            if st.button("전체 초기화", type="secondary", disabled=n_total == 0, width="stretch"):
+                st.session_state.data = pd.DataFrame(columns=COLUMNS)
+                st.session_state.loaded_file = None
+                save_store(st.session_state.data)
+                st.success("모든 데이터를 비웠습니다. 파일을 다시 업로드하세요.")
+                st.rerun()
+
+        st.divider()
+        if st.button("⏹ 앱 종료하기", type="primary", width="stretch"):
+            st.session_state["_shutdown"] = True
+            st.rerun()
+        st.caption("종료하면 서버와 콘솔(cmd) 창이 닫힙니다. 브라우저 탭은 직접 닫으세요.")
 
 
 def classify_flow(series: pd.Series) -> pd.Series:
@@ -675,6 +849,23 @@ if not data.empty:
 
 
 # ---------------------------------------------------------------------------
+# 보기 모드: 대시보드 / 달력
+# ---------------------------------------------------------------------------
+view_mode = st.radio(
+    "보기", ["📊 대시보드", "📅 달력"], horizontal=True, label_visibility="collapsed"
+)
+
+# 사이드바 하단(데이터 관리/종료)은 보기 모드와 무관하게 항상 그린다.
+render_sidebar_footer()
+
+if view_mode == "📅 달력":
+    st.subheader("📅 달력")
+    st.caption("날짜 칸의 금액은 그날 합계입니다. 날짜를 클릭하면 아래에 상세 내역이 나옵니다.")
+    render_calendar(filtered)
+    st.stop()  # 달력 모드에서는 아래 대시보드를 그리지 않음
+
+
+# ---------------------------------------------------------------------------
 # 요약 카드
 # ---------------------------------------------------------------------------
 flow_class = classify_flow(filtered["입금/출금"]) if not filtered.empty else pd.Series(dtype=str)
@@ -741,12 +932,13 @@ if not filtered.empty:
 # ---------------------------------------------------------------------------
 st.subheader("📋 데이터")
 
-if filtered.empty:
-    st.info("표시할 데이터가 없습니다.")
-else:
-    # 원본(session_state.data)의 인덱스를 유지한 채 정렬해서 보여준다.
-    view = filtered.sort_values("날짜", ascending=False, na_position="last").copy()
-    # 삭제 선택용 체크박스 컬럼 추가 (맨 앞)
+
+def _data_table(sub_df, editor_key):
+    """체크박스 삭제가 가능한 데이터 표를 그리고, 삭제 버튼까지 처리한다."""
+    if sub_df.empty:
+        st.info("표시할 내역이 없습니다.")
+        return
+    view = sub_df.sort_values("날짜", ascending=False, na_position="last").copy()
     view.insert(0, "🗑 삭제", False)
 
     edited = st.data_editor(
@@ -761,20 +953,52 @@ else:
             "금액": st.column_config.NumberColumn("금액", format="%d"),
         },
         disabled=[c for c in view.columns if c != "🗑 삭제"],
-        key="data_editor",
+        key=editor_key,
     )
 
     del_count = int(edited["🗑 삭제"].sum())
     col_del, col_info = st.columns([1, 3])
     with col_del:
-        if st.button(f"선택한 {del_count}건 삭제", type="primary", disabled=del_count == 0):
+        if st.button(
+            f"선택한 {del_count}건 삭제",
+            type="primary",
+            disabled=del_count == 0,
+            key=f"{editor_key}_delbtn",
+        ):
             drop_idx = edited.index[edited["🗑 삭제"]].tolist()
             st.session_state.data = st.session_state.data.drop(index=drop_idx).reset_index(drop=True)
-            save_store(st.session_state.data)  # 삭제 결과 저장
+            save_store(st.session_state.data)
             st.success(f"{len(drop_idx)}건을 삭제했습니다.")
             st.rerun()
     with col_info:
         st.caption("체크박스로 행을 선택한 뒤 '삭제' 버튼을 누르면 해당 내역이 제거됩니다.")
+
+
+if filtered.empty:
+    st.info("표시할 데이터가 없습니다.")
+else:
+    exp_tbl = filtered[flow_class == "지출"]
+    inc_tbl = filtered[flow_class == "입금"]
+    etc_tbl = filtered[~flow_class.isin(["지출", "입금"])]
+
+    tabs = [
+        f"📋 전체 ({len(filtered):,})",
+        f"💸 지출 ({len(exp_tbl):,})",
+        f"💰 수입 ({len(inc_tbl):,})",
+    ]
+    if not etc_tbl.empty:
+        tabs.append(f"기타 ({len(etc_tbl):,})")
+    data_tabs = st.tabs(tabs)
+
+    with data_tabs[0]:
+        _data_table(filtered, "editor_all")
+    with data_tabs[1]:
+        _data_table(exp_tbl, "editor_expense")
+    with data_tabs[2]:
+        _data_table(inc_tbl, "editor_income")
+    if not etc_tbl.empty:
+        with data_tabs[3]:
+            _data_table(etc_tbl, "editor_etc")
 
 st.caption(f"필터 적용: {len(filtered):,}건 / 전체: {len(data):,}건")
 
@@ -802,40 +1026,4 @@ with dl2:
     )
 
 
-# ---------------------------------------------------------------------------
-# 사이드바 하단: 데이터 관리 → 앱 종료 (스크립트 마지막에 그려 맨 하단 고정)
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    st.divider()
-
-    # 데이터 관리: 날짜 없는 행 정리 / 전체 초기화
-    st.header("🧹 데이터 관리")
-    _n_total = len(st.session_state.data)
-    _n_nodate = int(st.session_state.data["날짜"].isna().sum()) if _n_total else 0
-    st.caption(f"전체 {_n_total:,}건 · 날짜 없음 {_n_nodate:,}건")
-
-    _cman1, _cman2 = st.columns(2)
-    with _cman1:
-        if st.button("날짜없는행 삭제", disabled=_n_nodate == 0, width="stretch"):
-            st.session_state.data = (
-                st.session_state.data[st.session_state.data["날짜"].notna()]
-                .reset_index(drop=True)
-            )
-            save_store(st.session_state.data)
-            st.success(f"날짜 없는 {_n_nodate:,}건을 삭제했습니다.")
-            st.rerun()
-    with _cman2:
-        if st.button("전체 초기화", type="secondary", disabled=_n_total == 0, width="stretch"):
-            st.session_state.data = pd.DataFrame(columns=COLUMNS)
-            st.session_state.loaded_file = None
-            save_store(st.session_state.data)
-            st.success("모든 데이터를 비웠습니다. 파일을 다시 업로드하세요.")
-            st.rerun()
-
-    st.divider()
-
-    # 앱 종료 버튼 (맨 아래)
-    if st.button("⏹ 앱 종료하기", type="primary", width="stretch"):
-        st.session_state["_shutdown"] = True
-        st.rerun()
-    st.caption("종료하면 서버와 콘솔(cmd) 창이 닫힙니다. 브라우저 탭은 직접 닫으세요.")
+# (사이드바 하단은 render_sidebar_footer() 로 분리되어 메인 흐름에서 호출됨)
