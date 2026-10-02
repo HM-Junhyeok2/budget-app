@@ -357,7 +357,9 @@ def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_calendar(df: pd.DataFrame):
-    """월별 달력에 일별 금액 표시 + 날짜 선택 시 그날 내역."""
+    """월별 달력에 일별 금액 표시 + 날짜 선택 시 그날 내역.
+    달력 그리드는 HTML 테이블로 그려 모바일에서도 7칸 레이아웃이 유지된다.
+    """
     import calendar as _cal
 
     dated = df[df["날짜"].notna()].copy()
@@ -367,7 +369,7 @@ def render_calendar(df: pd.DataFrame):
 
     dated["_flow"] = classify_flow(dated["입금/출금"])
 
-    # 연/월 선택 (데이터에 있는 범위 기준)
+    # ── 연/월 선택 ──────────────────────────────────────────────────────────
     years = sorted(dated["날짜"].dt.year.unique().tolist())
     cc1, cc2 = st.columns(2)
     with cc1:
@@ -381,60 +383,127 @@ def render_calendar(df: pd.DataFrame):
 
     month_df = dated[(dated["날짜"].dt.year == y) & (dated["날짜"].dt.month == m)]
 
-    # 일별 수입/지출 집계
+    # ── 일별 수입/지출 집계 ──────────────────────────────────────────────────
     daily = {}
     for day, g in month_df.groupby(month_df["날짜"].dt.day):
         inc = float(g.loc[g["_flow"] == "입금", "금액"].sum())
         exp = float(g.loc[g["_flow"] == "지출", "금액"].sum())
         daily[int(day)] = (inc, exp)
 
-    st.markdown(f"#### {y}년 {m}월")
+    def _fmt(v):
+        """금액을 좁은 칸에 맞게 축약 (12만, 3.4만, 8000 등)."""
+        if v >= 10000:
+            return f"{v/10000:.0f}만" if v % 10000 == 0 else f"{v/10000:.1f}만"
+        return f"{v:,.0f}"
 
-    # 요일 헤더
-    week_days = ["월", "화", "수", "목", "금", "토", "일"]
-    head = st.columns(7)
-    for i, wd in enumerate(week_days):
-        head[i].markdown(f"**{wd}**")
-
-    # 달력 그리드 (월요일 시작)
+    # ── HTML 테이블로 달력 그리기 ─────────────────────────────────────────────
+    # st.columns(7) 은 모바일에서 세로로 쌓이지만,
+    # HTML table 은 모바일에서도 정확히 7칸 가로 레이아웃을 유지한다.
     _cal.setfirstweekday(_cal.MONDAY)
     weeks = _cal.monthcalendar(y, m)
-    for week in weeks:
-        cols = st.columns(7)
-        for i, day in enumerate(week):
-            with cols[i]:
-                if day == 0:
-                    st.write("")
-                    continue
-                inc, exp = daily.get(day, (0.0, 0.0))
-                # 날짜 버튼
-                if st.button(f"{day}", key=f"cal_day_{y}_{m}_{day}", width="stretch"):
-                    st.session_state["cal_selected"] = (y, m, day)
-                # 금액 표시 (지출 빨강, 수입 초록) — 좁은 칸에서 넘치지 않게 축약
-                def _fmt(v):
-                    if v >= 10000:
-                        return f"{v/10000:.0f}만" if v % 10000 == 0 else f"{v/10000:.1f}만"
-                    return f"{v:,.0f}"
-                if exp:
-                    st.markdown(
-                        f"<div style='text-align:center;color:#d33;font-size:10px;line-height:1.1;"
-                        f"white-space:nowrap;overflow:hidden'>-{_fmt(exp)}</div>",
-                        unsafe_allow_html=True,
-                    )
-                if inc:
-                    st.markdown(
-                        f"<div style='text-align:center;color:#2a7;font-size:10px;line-height:1.1;"
-                        f"white-space:nowrap;overflow:hidden'>+{_fmt(inc)}</div>",
-                        unsafe_allow_html=True,
-                    )
 
-    # 선택한 날짜 상세
+    # 선택된 날짜 (세션에서 읽어 현재 월이 맞을 때만 사용)
     sel = st.session_state.get("cal_selected")
-    if sel and sel[0] == y and sel[1] == m:
-        _, _, d = sel
+    sel_day = sel[2] if sel and sel[0] == y and sel[1] == m else None
+
+    rows_html = ""
+    for week in weeks:
+        row = ""
+        for day in week:
+            if day == 0:
+                row += "<td></td>"
+                continue
+            inc, exp = daily.get(day, (0.0, 0.0))
+            exp_html = f"<div class='exp'>-{_fmt(exp)}</div>" if exp else ""
+            inc_html = f"<div class='inc'>+{_fmt(inc)}</div>" if inc else ""
+            # 선택된 날짜는 배경 강조
+            selected_style = "background:#2a4a7a;border-radius:6px;" if day == sel_day else ""
+            row += (
+                f"<td style='{selected_style}padding:2px;text-align:center'>"
+                f"<div class='daynum'>{day}</div>"
+                f"{exp_html}{inc_html}"
+                f"</td>"
+            )
+        rows_html += f"<tr>{row}</tr>"
+
+    cal_html = f"""
+    <style>
+    .cal-wrap {{ overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+    .cal-table {{
+        width:100%; border-collapse:collapse; table-layout:fixed;
+        font-family: 'Malgun Gothic', sans-serif;
+    }}
+    .cal-table th {{
+        text-align:center; padding:6px 2px; font-size:0.78rem;
+        color:#aaa; border-bottom:1px solid #444;
+    }}
+    .cal-table td {{
+        text-align:center; padding:4px 1px; vertical-align:top;
+        min-width:13vw; height:52px;
+        border:1px solid #2a2a2a;
+    }}
+    .cal-table .daynum {{
+        font-size:0.9rem; font-weight:600; margin-bottom:1px;
+    }}
+    .cal-table .exp {{
+        font-size:0.65rem; color:#e05555; line-height:1.2;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }}
+    .cal-table .inc {{
+        font-size:0.65rem; color:#4caf82; line-height:1.2;
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }}
+    /* 토요일(6번째)·일요일(7번째) 색상 */
+    .cal-table td:nth-child(6) .daynum {{ color:#6ab0f5; }}
+    .cal-table td:nth-child(7) .daynum {{ color:#e07070; }}
+    </style>
+    <div class='cal-wrap'>
+    <table class='cal-table'>
+      <thead>
+        <tr>
+          <th>월</th><th>화</th><th>수</th><th>목</th>
+          <th>금</th><th style='color:#6ab0f5'>토</th><th style='color:#e07070'>일</th>
+        </tr>
+      </thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+    </div>
+    """
+
+    st.markdown(f"#### {y}년 {m}월")
+    st.markdown(cal_html, unsafe_allow_html=True)
+    st.caption("아래에서 날짜를 선택하면 그날 내역이 표시됩니다.")
+
+    # ── 날짜 선택 (숫자 버튼 대신 selectbox — 모바일 터치에 최적) ─────────────
+    day_options = sorted(daily.keys())  # 내역이 있는 날짜만
+    if day_options:
+        # 빈 항목 추가로 "선택 안 함" 허용
+        sel_opts = ["날짜 선택..."] + [f"{d}일" for d in day_options]
+        cur_idx = 0
+        if sel_day and sel_day in day_options:
+            cur_idx = day_options.index(sel_day) + 1
+        chosen = st.selectbox(
+            "📅 날짜 선택",
+            sel_opts,
+            index=cur_idx,
+            key=f"cal_sel_{y}_{m}",
+        )
+        if chosen != "날짜 선택...":
+            d = int(chosen.replace("일", ""))
+            st.session_state["cal_selected"] = (y, m, d)
+            sel_day = d
+        else:
+            st.session_state.pop("cal_selected", None)
+            sel_day = None
+    else:
+        st.info("이 달에는 내역이 없습니다.")
+        return
+
+    # ── 선택한 날짜 상세 내역 ──────────────────────────────────────────────────
+    if sel_day:
         st.divider()
-        st.markdown(f"### 📌 {y}년 {m}월 {d}일 내역")
-        day_df = month_df[month_df["날짜"].dt.day == d]
+        st.markdown(f"### 📌 {y}년 {m}월 {sel_day}일 내역")
+        day_df = month_df[month_df["날짜"].dt.day == sel_day]
         if day_df.empty:
             st.info("이 날짜에는 내역이 없습니다.")
         else:
